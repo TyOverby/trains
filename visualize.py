@@ -304,12 +304,14 @@ def format_time_label(t: datetime) -> str:
 
 
 def create_image(trains: list[dict], stations: list[str], now: datetime,
-                 buffer_before: int = 0, buffer_after: int = 0) -> Image.Image:
+                 buffer_before: int = 0, buffer_after: int = 0,
+                 cache_age_seconds: float | None = None) -> Image.Image:
     """Create a 1-bit image visualization of the train schedule.
 
     Args:
         buffer_before: Minutes of checkerboard buffer before each train bar
         buffer_after: Minutes of checkerboard buffer after each train bar
+        cache_age_seconds: Age of the most stale cache entry, shown below the timestamp
     """
     img = Image.new("1", (WIDTH, HEIGHT), WHITE)
 
@@ -343,6 +345,20 @@ def create_image(trains: list[dict], stations: list[str], now: datetime,
     draw_rect(img, timestamp_x - timestamp_width - 2, timestamp_y - 1,
               timestamp_x + 2, timestamp_y + CHAR_HEIGHT + 1, WHITE)
     draw_text(img, timestamp_x, timestamp_y, timestamp_str, BLACK, anchor="right", scale=1)
+
+    # Cache age below the timestamp
+    if cache_age_seconds is not None:
+        age_minutes = int(cache_age_seconds) // 60
+        age_seconds = int(cache_age_seconds) % 60
+        if age_minutes > 0:
+            age_str = f"data: {age_minutes}m {age_seconds}s old"
+        else:
+            age_str = f"data: {age_seconds}s old"
+        age_y = timestamp_y + CHAR_HEIGHT + 3
+        age_width = get_text_width(age_str, scale=1)
+        draw_rect(img, timestamp_x - age_width - 2, age_y - 1,
+                  timestamp_x + 2, age_y + CHAR_HEIGHT + 1, WHITE)
+        draw_text(img, timestamp_x, age_y, age_str, BLACK, anchor="right", scale=1)
 
     # Bottom axis line (full width)
     draw_hline(img, 0, WIDTH, chart_bottom, BLACK)
