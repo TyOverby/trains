@@ -1,30 +1,232 @@
 #!/usr/bin/env python3
-"""Generate a PNG visualization of train schedules from JSON data."""
+"""Generate a PNG visualization of train schedules from JSON data using bitmap rendering."""
 
 import json
+import os
 import sys
-from datetime import datetime, timedelta, timezone
-from io import BytesIO
+from datetime import datetime, timedelta
 
-import cairosvg
-import svgwrite
-from PIL import Image
+from PIL import Image  # type: ignore
 
 # Visualization settings (800x480 for e-ink display)
 HOURS_TO_SHOW = 3
 WIDTH = 800
 HEIGHT = 480
-LEFT_MARGIN = 50  # Space for axis
-RIGHT_MARGIN = 20
-TOP_MARGIN = 50
+LEFT_MARGIN = 50
+RIGHT_MARGIN = 40
+TOP_MARGIN = 0
 BOTTOM_MARGIN = 40
 
-# Colors (black and white for e-ink)
-BAR_COLOR = "#000000"
-TEXT_COLOR = "#000000"
-TEXT_ON_BAR_COLOR = "#ffffff"
-GRID_COLOR = "#cccccc"
-NOW_LINE_COLOR = "#000000"
+# Colors (1-bit: 0=black, 1=white)
+BLACK = 0
+WHITE = 1
+
+
+def load_font(font_path: str) -> dict:
+    """Load bitmap font from JSON file."""
+    with open(font_path) as f:
+        font_data = json.load(f)
+
+    font = {}
+    for char_info in font_data:
+        char = char_info["char"]
+        # Convert 'X' and ' ' to boolean rows
+        pixels = []
+        for row in char_info["pixels"]:
+            pixels.append([c == 'X' for c in row])
+        font[char] = {
+            "pixels": pixels,
+            "width": char_info["width"],
+        }
+
+    # Map uppercase to lowercase since font only has lowercase
+    for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        lower = c.lower()
+        if lower in font and c not in font:
+            font[c] = font[lower]
+
+    # Add space character if not present
+    if ' ' not in font:
+        font[' '] = {
+            "pixels": [[False] * 7 for _ in range(11)],
+            "width": 7,
+        }
+
+    # Add colon if not present (for time display)
+    if ':' not in font:
+        font[':'] = {
+            "pixels": [
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, True, False, False, False],
+                [False, False, False, True, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, True, False, False, False],
+                [False, False, False, True, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+            ],
+            "width": 7,
+        }
+
+    # Add hyphen/dash if not present
+    if '-' not in font:
+        font['-'] = {
+            "pixels": [
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, True, True, True, True, True, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+            ],
+            "width": 7,
+        }
+
+    # Add > if not present
+    if '>' not in font:
+        font['>'] = {
+            "pixels": [
+                [False, False, False, False, False, False, False],
+                [False, True, False, False, False, False, False],
+                [False, False, True, False, False, False, False],
+                [False, False, False, True, False, False, False],
+                [False, False, False, False, True, False, False],
+                [False, False, False, True, False, False, False],
+                [False, False, True, False, False, False, False],
+                [False, True, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+            ],
+            "width": 7,
+        }
+
+    # Add # if not present
+    if '#' not in font:
+        font['#'] = {
+            "pixels": [
+                [False, False, False, False, False, False, False],
+                [False, False, True, False, True, False, False],
+                [False, False, True, False, True, False, False],
+                [False, True, True, True, True, True, False],
+                [False, False, True, False, True, False, False],
+                [False, True, True, True, True, True, False],
+                [False, False, True, False, True, False, False],
+                [False, False, True, False, True, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+                [False, False, False, False, False, False, False],
+            ],
+            "width": 7,
+        }
+
+    return font
+
+
+# Load font from departure.json
+FONT_PATH = os.path.join(os.path.dirname(__file__), "departure.json")
+FONT_DATA = load_font(FONT_PATH)
+CHAR_WIDTH = 7
+CHAR_HEIGHT = 11
+CHAR_SPACING = 1
+FONT_SCALE = 2  # Each font pixel becomes a 2x2 block
+
+
+def draw_char(img, x: int, y: int, char: str, color: int, scale: int = FONT_SCALE) -> int:
+    """Draw a single character at the given position. Returns the scaled width drawn."""
+    if char not in FONT_DATA:
+        char = ' '
+    if char not in FONT_DATA:
+        return CHAR_WIDTH * scale
+
+    char_data = FONT_DATA[char]
+    pixels = char_data["pixels"]
+    width = char_data["width"]
+
+    for row_idx, row in enumerate(pixels):
+        for col_idx, is_set in enumerate(row):
+            if is_set:
+                # Draw a scale x scale block for each pixel
+                for dy in range(scale):
+                    for dx in range(scale):
+                        px = x + col_idx * scale + dx
+                        py = y + row_idx * scale + dy
+                        if 0 <= px < WIDTH and 0 <= py < HEIGHT:
+                            img.putpixel((px, py), color)
+
+    return width * scale
+
+
+def draw_text(img, x: int, y: int, text: str, color: int, anchor: str = "left", scale: int = FONT_SCALE) -> None:
+    """Draw text at the given position with the specified anchor."""
+    text_width = get_text_width(text, scale)
+
+    if anchor == "center":
+        x = x - text_width // 2
+    elif anchor == "right":
+        x = x - text_width
+
+    for char in text:
+        char_width = draw_char(img, x, y, char, color, scale)
+        x += char_width + CHAR_SPACING * scale
+
+
+def get_text_width(text: str, scale: int = FONT_SCALE) -> int:
+    """Get the pixel width of a text string (scaled)."""
+    if not text:
+        return 0
+    total = 0
+    for char in text:
+        if char in FONT_DATA:
+            total += FONT_DATA[char]["width"] * scale
+        else:
+            total += CHAR_WIDTH * scale
+    total += (len(text) - 1) * CHAR_SPACING * scale
+    return total
+
+
+def draw_rect(img, x1: int, y1: int, x2: int, y2: int, color: int) -> None:
+    """Draw a filled rectangle."""
+    for py in range(max(0, y1), min(HEIGHT, y2)):
+        for px in range(max(0, x1), min(WIDTH, x2)):
+            img.putpixel((px, py), color)
+
+
+def draw_checkerboard(img, x1: int, y1: int, x2: int, y2: int) -> None:
+    """Draw a checkerboard pattern (1px alternating black and white) with black border."""
+    for py in range(max(0, y1), min(HEIGHT, y2)):
+        for px in range(max(0, x1), min(WIDTH, x2)):
+            # Black border on edges
+            if py == y1 or py == y2 - 1 or px == x1 or px == x2 - 1:
+                img.putpixel((px, py), BLACK)
+            else:
+                # 1px checkerboard pattern
+                color = BLACK if (px + py) % 2 == 0 else WHITE
+                img.putpixel((px, py), color)
+
+
+def draw_hline(img, x1: int, x2: int, y: int, color: int) -> None:
+    """Draw a horizontal line."""
+    if 0 <= y < HEIGHT:
+        for px in range(max(0, x1), min(WIDTH, x2)):
+            img.putpixel((px, y), color)
+
+
+def draw_vline(img, x: int, y1: int, y2: int, color: int, dashed: bool = False) -> None:
+    """Draw a vertical line, optionally dashed."""
+    if 0 <= x < WIDTH:
+        for py in range(max(0, y1), min(HEIGHT, y2)):
+            if dashed and (py // 4) % 2 == 1:
+                continue
+            img.putpixel((x, py), color)
 
 
 def round_down_to_30min(t: datetime) -> datetime:
@@ -59,14 +261,11 @@ def filter_trains_in_window(trains: list[dict], start_time: datetime, end: datet
         if not segments:
             continue
 
-        # Get the first segment's departure time
         first_dep, _ = get_segment_times(segments[0])
         if first_dep is None:
             continue
 
-        # Only include trains that haven't departed yet and depart before window ends
         if first_dep >= now and first_dep <= end:
-            # Parse all segment times
             parsed_segments = []
             for seg in segments:
                 dep, arr = get_segment_times(seg)
@@ -84,17 +283,16 @@ def filter_trains_in_window(trains: list[dict], start_time: datetime, end: datet
                     "_first_dep": first_dep,
                 })
 
-    # Sort by first departure time
     filtered.sort(key=lambda t: t["_first_dep"])
     return filtered
 
 
-def time_to_x(t: datetime, start_time: datetime, end: datetime) -> float:
+def time_to_x(t: datetime, start_time: datetime, end: datetime) -> int:
     """Convert a time to an x coordinate."""
     total_seconds = (end - start_time).total_seconds()
     elapsed_seconds = (t - start_time).total_seconds()
     ratio = elapsed_seconds / total_seconds
-    return LEFT_MARGIN + ratio * (WIDTH - LEFT_MARGIN - RIGHT_MARGIN)
+    return int(LEFT_MARGIN + ratio * (WIDTH - LEFT_MARGIN - RIGHT_MARGIN))
 
 
 def format_time_label(t: datetime) -> str:
@@ -102,116 +300,76 @@ def format_time_label(t: datetime) -> str:
     return t.strftime("%-I:%M")
 
 
-def create_svg(trains: list[dict], stations: list[str], now: datetime) -> str:
-    """Create an SVG visualization of the train schedule."""
-    # Round start time down to nearest 30-minute increment
+def create_image(trains: list[dict], stations: list[str], now: datetime,
+                 buffer_before: int = 0, buffer_after: int = 0) -> Image.Image:
+    """Create a 1-bit image visualization of the train schedule.
+
+    Args:
+        buffer_before: Minutes of checkerboard buffer before each train bar
+        buffer_after: Minutes of checkerboard buffer after each train bar
+    """
+    img = Image.new("1", (WIDTH, HEIGHT), WHITE)
+
     start_time = round_down_to_30min(now)
     end = start_time + timedelta(hours=HOURS_TO_SHOW)
 
-    # Filter trains in our time window (only those that haven't departed yet)
     visible_trains = filter_trains_in_window(trains, start_time, end, now)
 
-    title = "Trains: " + " -> ".join(stations)
-
     if not visible_trains:
-        # Create a simple "no trains" SVG
-        dwg = svgwrite.Drawing(size=(WIDTH, HEIGHT))
-        dwg.add(dwg.rect((0, 0), (WIDTH, HEIGHT), fill="#ffffff"))
-        dwg.add(dwg.text(
-            f"No trains for {' -> '.join(stations)} in the next {HOURS_TO_SHOW} hours",
-            insert=(WIDTH / 2, HEIGHT / 2),
-            text_anchor="middle",
-            font_size="16px",
-            font_family="sans-serif",
-            fill=TEXT_COLOR,
-        ))
-        return dwg.tostring()
+        msg = f"No trains in next {HOURS_TO_SHOW} hours"
+        draw_text(img, WIDTH // 2, HEIGHT // 2 - CHAR_HEIGHT * FONT_SCALE // 2, msg, BLACK, anchor="center")
+        return img
 
-    # Calculate row height based on available space and number of trains
+    # Calculate row height
     available_height = HEIGHT - TOP_MARGIN - BOTTOM_MARGIN
-    row_height = available_height / len(visible_trains)
+    row_height = available_height // len(visible_trains)
+    # Bar height: station codes (scale=1) + 2px gap + train name (scale=2) + padding
+    bar_height = CHAR_HEIGHT + 2 + CHAR_HEIGHT * FONT_SCALE + 4  # top/bottom padding
 
-    dwg = svgwrite.Drawing(size=(WIDTH, HEIGHT))
-
-    # Background
-    dwg.add(dwg.rect((0, 0), (WIDTH, HEIGHT), fill="#ffffff"))
-
-    # Title
-    dwg.add(dwg.text(
-        title,
-        insert=(WIDTH / 2, 25),
-        text_anchor="middle",
-        font_size="18px",
-        font_family="sans-serif",
-        font_weight="bold",
-        fill=TEXT_COLOR,
-    ))
-
-    # Draw time axis
     chart_left = LEFT_MARGIN
     chart_right = WIDTH - RIGHT_MARGIN
     chart_top = TOP_MARGIN
     chart_bottom = HEIGHT - BOTTOM_MARGIN
 
-    # Axis line
-    dwg.add(dwg.line(
-        (chart_left, chart_bottom),
-        (chart_right, chart_bottom),
-        stroke=TEXT_COLOR,
-        stroke_width=1,
-    ))
+    # Draw generation timestamp in top right corner
+    timestamp_str = now.strftime("%b %-d, %Y %-I:%M%p").lower()
+    timestamp_width = get_text_width(timestamp_str, scale=1)
+    timestamp_x = WIDTH - 4  # 4px from right edge
+    timestamp_y = 4  # 4px from top
+    # White background
+    draw_rect(img, timestamp_x - timestamp_width - 2, timestamp_y - 1,
+              timestamp_x + 2, timestamp_y + CHAR_HEIGHT + 1, WHITE)
+    draw_text(img, timestamp_x, timestamp_y, timestamp_str, BLACK, anchor="right", scale=1)
+
+    # Bottom axis line (full width)
+    draw_hline(img, 0, WIDTH, chart_bottom, BLACK)
 
     # Time markers (every 30 minutes)
     marker_time = start_time
     while marker_time <= end:
         x = time_to_x(marker_time, start_time, end)
 
-        # Vertical grid line
-        dwg.add(dwg.line(
-            (x, chart_top),
-            (x, chart_bottom),
-            stroke=GRID_COLOR,
-            stroke_width=1,
-        ))
+        # Vertical grid line (light - draw every other pixel)
+        for py in range(chart_top, chart_bottom):
+            if py % 3 == 0:
+                img.putpixel((x, py), BLACK)
 
         # Time label
-        dwg.add(dwg.text(
-            format_time_label(marker_time),
-            insert=(x, chart_bottom + 20),
-            text_anchor="middle",
-            font_size="12px",
-            font_family="sans-serif",
-            fill=TEXT_COLOR,
-        ))
+        label = format_time_label(marker_time)
+        draw_text(img, x, chart_bottom + 8, label, BLACK, anchor="center")
 
         marker_time += timedelta(minutes=30)
 
-    # "Now" indicator
+    # "Now" indicator (line only)
     now_x = time_to_x(now, start_time, end)
-    dwg.add(dwg.line(
-        (now_x, chart_top - 5),
-        (now_x, chart_bottom),
-        stroke=NOW_LINE_COLOR,
-        stroke_width=2,
-        stroke_dasharray="4,2",
-    ))
-    dwg.add(dwg.text(
-        "Now",
-        insert=(now_x, chart_top - 10),
-        text_anchor="middle",
-        font_size="10px",
-        font_family="sans-serif",
-        fill=NOW_LINE_COLOR,
-    ))
+    draw_vline(img, now_x, chart_top - 5, chart_bottom, BLACK, dashed=True)
 
     # Draw train bars
-    bar_height = row_height * 0.6
-
     for i, train in enumerate(visible_trains):
-        y = chart_top + i * row_height + row_height / 2
+        y_center = chart_top + i * row_height + row_height // 2
         segments = train["_segments"]
 
-        # Find the longest segment (by pixel width) to put the train name in
+        # Find longest segment for train name
         segment_widths = []
         for seg in segments:
             dep = seg["_dep"]
@@ -224,55 +382,110 @@ def create_svg(trains: list[dict], stations: list[str], now: datetime) -> str:
 
         longest_segment_idx = segment_widths.index(max(segment_widths))
 
-        # First pass: draw bars and collect positions for intermediate times
-        segment_positions = []  # List of (x1, x2, dep, arr, seg_idx, seg) for visible segments
+        # Collect segment positions
+        segment_positions = []
 
         for seg_idx, seg in enumerate(segments):
             dep = seg["_dep"]
             arr = seg["_arr"]
 
-            # Clamp times to visible window
             visible_dep = max(dep, start_time)
             visible_arr = min(arr, end)
 
-            # Skip if segment is entirely outside window
             if visible_arr <= start_time or visible_dep >= end:
                 continue
 
             x1 = time_to_x(visible_dep, start_time, end)
-            x2 = time_to_x(visible_arr, start_time, end)
+            # Extend bars that reach the end of the window to the edge of the image
+            x2 = WIDTH if arr >= end else time_to_x(visible_arr, start_time, end)
             bar_width = x2 - x1
 
             segment_positions.append((x1, x2, dep, arr, seg_idx, seg))
 
             # Draw bar
-            dwg.add(dwg.rect(
-                (x1, y - bar_height / 2),
-                (max(bar_width, 2), bar_height),
-                fill=BAR_COLOR,
-                rx=3,
-                ry=3,
-            ))
+            bar_top = y_center - bar_height // 2
+            bar_bottom = y_center + bar_height // 2
+            draw_rect(img, x1, bar_top, x2, bar_bottom, BLACK)
 
-            # Train label only in the longest segment
-            if seg_idx == longest_segment_idx and bar_width > 60:
-                route = train.get("route_name") or "Train"
-                train_num = train.get("train_num", "")
-                label = f"{route} #{train_num}"
-                bar_center_x = (x1 + x2) / 2
+        # Calculate full block extent for centering train name
+        if segment_positions:
+            block_x1 = segment_positions[0][0]  # First segment's left edge
+            block_x2 = segment_positions[-1][1]  # Last segment's right edge
 
-                dwg.add(dwg.text(
-                    label,
-                    insert=(bar_center_x, y + 5),
-                    text_anchor="middle",
-                    font_size="12px",
-                    font_family="sans-serif",
-                    font_weight="bold",
-                    fill=TEXT_ON_BAR_COLOR,
-                ))
+            # Draw checkerboard buffers before and after the train
+            bar_top = y_center - bar_height // 2
+            bar_bottom = y_center + bar_height // 2
 
-        # Second pass: draw times above the bars and station codes inside the bars
-        time_y = y - bar_height / 2 - 3
+            if buffer_before > 0:
+                first_dep = segment_positions[0][2]  # dep time of first segment
+                buffer_start_time = first_dep - timedelta(minutes=buffer_before)
+                buffer_start_x = time_to_x(max(buffer_start_time, start_time), start_time, end)
+                if buffer_start_x < block_x1:
+                    draw_checkerboard(img, buffer_start_x, bar_top, block_x1, bar_bottom)
+
+            if buffer_after > 0:
+                last_arr = segment_positions[-1][3]  # arr time of last segment
+                buffer_end_time = last_arr + timedelta(minutes=buffer_after)
+                buffer_end_x = time_to_x(min(buffer_end_time, end), start_time, end)
+                # If the bar extends to edge, start checkerboard from there
+                if block_x2 >= WIDTH:
+                    pass  # No room for buffer after
+                elif buffer_end_x > block_x2:
+                    draw_checkerboard(img, block_x2, bar_top, min(buffer_end_x, WIDTH), bar_bottom)
+
+        # Draw times and station codes (scale=1 for times)
+        time_y = y_center - bar_height // 2 - CHAR_HEIGHT - 3
+
+        # Collect all time labels with their positions first, then check for overlaps
+        time_labels = []
+
+        for pos_idx, (x1, x2, dep, arr, seg_idx, seg) in enumerate(segment_positions):
+            is_first = pos_idx == 0
+            is_last = pos_idx == len(segment_positions) - 1
+
+            # Departure time above first bar (left-aligned)
+            if is_first:
+                label = format_time_label(dep)
+                label_width = get_text_width(label, scale=1)
+                time_labels.append((x1, x1 + label_width, label))
+
+            # Intermediate time (centered in gap)
+            if not is_last:
+                next_x1 = segment_positions[pos_idx + 1][0]
+                gap_center = (x2 + next_x1) // 2
+                label = format_time_label(arr)
+                label_width = get_text_width(label, scale=1)
+                time_labels.append((gap_center - label_width // 2, gap_center + label_width // 2, label))
+
+            # Arrival time above last bar (right-aligned)
+            if is_last and arr <= end:
+                label = format_time_label(arr)
+                label_width = get_text_width(label, scale=1)
+                time_labels.append((x2 - label_width, x2, label))
+
+        # Draw time labels, skipping overlaps
+        min_gap = 4
+        last_right = -1000
+        for left, right, label in time_labels:
+            if left > last_right + min_gap:
+                # Draw white background to cover dashed lines
+                bg_pad = 1
+                draw_rect(img, left - bg_pad, time_y - bg_pad, right + bg_pad, time_y + CHAR_HEIGHT + bg_pad, WHITE)
+                # Determine anchor based on position
+                if left == time_labels[0][0] and time_labels[0][2] == label:
+                    draw_text(img, left, time_y, label, BLACK, anchor="left", scale=1)
+                else:
+                    center = (left + right) // 2
+                    draw_text(img, center, time_y, label, BLACK, anchor="center", scale=1)
+                last_right = right
+
+        # Calculate vertical positions for two rows of text
+        bar_top = y_center - bar_height // 2
+        bar_bottom = y_center + bar_height // 2
+        text_padding = 2
+        padding = 4
+        station_y = bar_top + text_padding  # Station codes at top (scale=1)
+        train_name_y = bar_bottom - CHAR_HEIGHT * FONT_SCALE - text_padding  # Train name at bottom (scale=2)
 
         for pos_idx, (x1, x2, dep, arr, seg_idx, seg) in enumerate(segment_positions):
             bar_width = x2 - x1
@@ -282,87 +495,53 @@ def create_svg(trains: list[dict], stations: list[str], now: datetime) -> str:
             from_station = seg["from"]["station_code"]
             to_station = seg["to"]["station_code"]
 
-            # Departure time above left edge of first bar
-            if is_first:
-                dwg.add(dwg.text(
-                    format_time_label(dep),
-                    insert=(x1, time_y),
-                    text_anchor="start",
-                    font_size="9px",
-                    font_family="sans-serif",
-                    fill=TEXT_COLOR,
-                ))
-
-            # Arrival time above right edge of last bar
-            if is_last and arr <= end:
-                dwg.add(dwg.text(
-                    format_time_label(arr),
-                    insert=(x2, time_y),
-                    text_anchor="end",
-                    font_size="9px",
-                    font_family="sans-serif",
-                    fill=TEXT_COLOR,
-                ))
-
-            # Intermediate time centered between this bar and the next
-            if not is_last:
-                next_x1 = segment_positions[pos_idx + 1][0]
-                gap_center = (x2 + next_x1) / 2
-
-                dwg.add(dwg.text(
-                    format_time_label(arr),
-                    insert=(gap_center, time_y),
-                    text_anchor="middle",
-                    font_size="9px",
-                    font_family="sans-serif",
-                    fill=TEXT_COLOR,
-                ))
-
-            # Station codes: from station on left of first bar, to station on right of last bar
-            if bar_width > 30:
-                # From station on left side of first bar only
+            # Station codes at top of bars (scale=1)
+            min_width_for_station = get_text_width("XXX", scale=1) + padding * 2
+            if bar_width > min_width_for_station:
                 if is_first:
-                    dwg.add(dwg.text(
-                        from_station,
-                        insert=(x1 + 3, y + 4),
-                        font_size="9px",
-                        font_family="sans-serif",
-                        fill=TEXT_ON_BAR_COLOR,
-                    ))
-
-                # To station on right side of last bar only
+                    draw_text(img, x1 + padding, station_y, from_station, WHITE, anchor="left", scale=1)
                 if is_last:
-                    dwg.add(dwg.text(
-                        to_station,
-                        insert=(x2 - 3, y + 4),
-                        text_anchor="end",
-                        font_size="9px",
-                        font_family="sans-serif",
-                        fill=TEXT_ON_BAR_COLOR,
-                    ))
+                    draw_text(img, x2 - padding, station_y, to_station, WHITE, anchor="right", scale=1)
 
-            # Intermediate station code centered between bars, same y as other station codes
+            # Intermediate station code
             if not is_last:
                 next_x1 = segment_positions[pos_idx + 1][0]
-                gap_center = (x2 + next_x1) / 2
+                gap_center = (x2 + next_x1) // 2
 
-                # Black background behind white text so it's visible in narrow gaps
-                dwg.add(dwg.rect(
-                    (gap_center - 15, y - 6),
-                    (30, 14),
-                    fill=BAR_COLOR,
-                ))
+                # Draw black background for station code
+                code_width = get_text_width(to_station, scale=1)
+                bg_padding = 2
+                bg_x1 = gap_center - code_width // 2 - bg_padding
+                bg_x2 = gap_center + code_width // 2 + bg_padding
+                bg_y1 = station_y - 1
+                bg_y2 = station_y + CHAR_HEIGHT + 1
+                draw_rect(img, bg_x1, bg_y1, bg_x2, bg_y2, BLACK)
 
-                dwg.add(dwg.text(
-                    to_station,
-                    insert=(gap_center, y + 4),
-                    text_anchor="middle",
-                    font_size="9px",
-                    font_family="sans-serif",
-                    fill=TEXT_ON_BAR_COLOR,
-                ))
+                draw_text(img, gap_center, station_y, to_station, WHITE, anchor="center", scale=1)
 
-    return dwg.tostring()
+        # Train name centered across the full block (all segments combined, scale=2)
+        if segment_positions:
+            route = train.get("route_name") or "Train"
+            if route == "Northeast Regional":
+                route = "NE Regional"
+            train_num = train.get("train_num", "")
+            label = f"{route} {train_num}"
+            label_width = get_text_width(label)  # defaults to scale=2
+            center_x = (block_x1 + block_x2) // 2
+            train_padding = 8  # larger padding for scale=2 text
+
+            # Check if centering would clip on the right
+            if center_x + label_width // 2 > WIDTH:
+                # Left-align with padding
+                draw_text(img, block_x1 + train_padding, train_name_y, label, WHITE, anchor="left")
+            # Check if centering would clip on the left
+            elif center_x - label_width // 2 < 0:
+                # Right-align with padding
+                draw_text(img, block_x2 - train_padding, train_name_y, label, WHITE, anchor="right")
+            else:
+                draw_text(img, center_x, train_name_y, label, WHITE, anchor="center")
+
+    return img
 
 
 def main():
@@ -374,29 +553,15 @@ def main():
     json_file = sys.argv[1]
     output_file = sys.argv[2] if len(sys.argv) > 2 else json_file.replace(".json", ".png")
 
-    # Load JSON data
     with open(json_file) as f:
         data = json.load(f)
 
     stations = data["stations"]
     trains = data["trains"]
 
-    # Use current time
     now = datetime.now().astimezone()
 
-    # Generate SVG
-    svg_content = create_svg(trains, stations, now)
-
-    # Convert to PNG at 3x resolution for better text quality
-    png_buffer = BytesIO()
-    cairosvg.svg2png(bytestring=svg_content.encode(), write_to=png_buffer, scale=3)
-
-    # Resize down and convert to 1-bit black and white for e-ink
-    png_buffer.seek(0)
-    img = Image.open(png_buffer)
-    img = img.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
-    img = img.convert("L")  # Convert to grayscale first
-    img = img.point(lambda x: 255 if x > 128 else 0, mode="1")  # Threshold to 1-bit
+    img = create_image(trains, stations, now)
     img.save(output_file)
     print(f"Generated {output_file}")
 
