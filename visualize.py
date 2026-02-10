@@ -5,8 +5,11 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from PIL import Image  # type: ignore
+
+NYC_TZ = ZoneInfo("America/New_York")
 
 # Visualization settings (800x480 for e-ink display)
 HOURS_TO_SHOW = 3
@@ -241,7 +244,7 @@ def parse_time(time_str: str | None) -> datetime | None:
     if not time_str:
         return None
     try:
-        return datetime.fromisoformat(time_str)
+        return datetime.fromisoformat(time_str).astimezone(NYC_TZ)
     except ValueError:
         return None
 
@@ -559,7 +562,7 @@ def main():
     stations = data["stations"]
     trains = data["trains"]
 
-    now = datetime.now().astimezone()
+    now = datetime.now(NYC_TZ)
 
     img = create_image(trains, stations, now)
     img.save(output_file)

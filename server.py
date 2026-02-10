@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+from zoneinfo import ZoneInfo
 
 from main import find_connecting_trains
 from visualize import create_image
@@ -77,7 +78,7 @@ class TrainHandler(BaseHTTPRequestHandler):
             return
 
         # Generate PNG (always fresh)
-        now = datetime.now().astimezone()
+        now = datetime.now(ZoneInfo("America/New_York"))
         img = create_image(data["trains"], data["stations"], now,
                           buffer_before=buffer_before, buffer_after=buffer_after)
 
