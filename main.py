@@ -6,12 +6,17 @@ import sys
 import httpx
 
 API_BASE = "https://api-v3.amtraker.com/v3"
+API_TIMEOUT = 30  # seconds
 
 
 def fetch_station(station_code: str) -> dict | None:
     """Fetch station info including list of trains serving it."""
     url = f"{API_BASE}/stations/{station_code}"
-    response = httpx.get(url)
+    try:
+        response = httpx.get(url, timeout=API_TIMEOUT)
+    except httpx.TimeoutException:
+        print(f"Timeout fetching station {station_code}")
+        return None
     if response.status_code != 200:
         return None
     data = response.json()
@@ -21,7 +26,11 @@ def fetch_station(station_code: str) -> dict | None:
 def fetch_train(train_id: str) -> dict | None:
     """Fetch train details including all station stops."""
     url = f"{API_BASE}/trains/{train_id}"
-    response = httpx.get(url)
+    try:
+        response = httpx.get(url, timeout=API_TIMEOUT)
+    except httpx.TimeoutException:
+        print(f"Timeout fetching train {train_id}")
+        return None
     if response.status_code != 200:
         return None
     data = response.json()
