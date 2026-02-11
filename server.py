@@ -76,6 +76,9 @@ def get_trains(stations: list[str]) -> dict:
 
 class TrainHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        request_start = time.monotonic()
+        print(f"[request] START {self.command} {self.path} from {self.address_string()}")
+
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
 
@@ -85,6 +88,7 @@ class TrainHandler(BaseHTTPRequestHandler):
             stations_param = params.get("stations", [""])[0]
             if not stations_param:
                 self.send_error(400, "Missing 'stations' parameter")
+                print(f"[request] END 400 ({time.monotonic() - request_start:.3f}s)")
                 return
             stations = [s.strip().upper() for s in stations_param.split(",")]
         elif parsed.path.startswith("/trains/"):
@@ -93,10 +97,12 @@ class TrainHandler(BaseHTTPRequestHandler):
             stations = [s.upper() for s in path_parts if s]
         else:
             self.send_error(404, "Not found. Use /trains?stations=NYP,NWK,PHL or /trains/NYP/NWK/PHL")
+            print(f"[request] END 404 ({time.monotonic() - request_start:.3f}s)")
             return
 
         if len(stations) < 2:
             self.send_error(400, "Need at least 2 stations")
+            print(f"[request] END 400 ({time.monotonic() - request_start:.3f}s)")
             return
 
         # Parse buffer parameters (in minutes)
@@ -105,33 +111,46 @@ class TrainHandler(BaseHTTPRequestHandler):
             buffer_after = int(params.get("buffer_after", ["0"])[0])
         except ValueError:
             self.send_error(400, "buffer_before and buffer_after must be integers")
+            print(f"[request] END 400 ({time.monotonic() - request_start:.3f}s)")
             return
 
         # Get train data (cached)
+        print(f"[request] fetching train data for {' -> '.join(stations)}...")
+        t0 = time.monotonic()
         data = get_trains(stations)
+        print(f"[request] train data fetched in {time.monotonic() - t0:.3f}s ({len(data['trains'])} trains)")
 
         if not data["trains"]:
             self.send_error(404, f"No trains found for route: {' -> '.join(stations)}")
+            print(f"[request] END 404 ({time.monotonic() - request_start:.3f}s)")
             return
 
         # Generate PNG (always fresh)
+        print(f"[request] rendering image...")
+        t0 = time.monotonic()
         now = datetime.now(ZoneInfo("America/New_York"))
         img = create_image(data["trains"], data["stations"], now,
                           buffer_before=buffer_before, buffer_after=buffer_after,
                           cache_age_seconds=max_cache_age())
+        print(f"[request] image rendered in {time.monotonic() - t0:.3f}s")
 
         # Convert to PNG bytes
+        t0 = time.monotonic()
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         png_data = buf.getvalue()
+        print(f"[request] PNG encoded in {time.monotonic() - t0:.3f}s ({len(png_data)} bytes)")
 
         # Send response
+        t0 = time.monotonic()
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
         self.send_header("Content-Length", len(png_data))
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(png_data)
+        print(f"[request] response sent in {time.monotonic() - t0:.3f}s")
+        print(f"[request] END 200 ({time.monotonic() - request_start:.3f}s)")
 
     def log_message(self, format, *args):
         print(f"{self.address_string()} - {format % args}")
