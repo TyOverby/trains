@@ -337,6 +337,7 @@ def create_image(trains: list[dict], stations: list[str], now: datetime,
     end = round_up_to_30min(now + timedelta(hours=HOURS_TO_SHOW))
 
     visible_trains = filter_trains_in_window(trains, start_time, end, now)
+    compact = len(visible_trains) > 8
 
     if not visible_trains:
         msg = f"No trains in next {HOURS_TO_SHOW} hours"
@@ -346,8 +347,11 @@ def create_image(trains: list[dict], stations: list[str], now: datetime,
     # Calculate row height
     available_height = HEIGHT - TOP_MARGIN - BOTTOM_MARGIN
     row_height = available_height // len(visible_trains)
-    # Bar height: station codes (scale=1) + 2px gap + train name (scale=2) + padding
-    bar_height = CHAR_HEIGHT + 2 + CHAR_HEIGHT * FONT_SCALE + 4  # top/bottom padding
+    # Bar height depends on rendering mode
+    if compact:
+        bar_height = CHAR_HEIGHT * FONT_SCALE + 6  # just train name + padding
+    else:
+        bar_height = CHAR_HEIGHT + 2 + CHAR_HEIGHT * FONT_SCALE + 4  # station codes + train name + padding
 
     chart_left = LEFT_MARGIN
     chart_right = WIDTH - RIGHT_MARGIN
@@ -470,113 +474,166 @@ def create_image(trains: list[dict], stations: list[str], now: datetime,
                 elif buffer_end_x > block_x2:
                     draw_checkerboard(img, block_x2, bar_top, min(buffer_end_x, WIDTH), bar_bottom)
 
-        # Draw times and station codes (scale=1 for times)
-        time_y = y_center - bar_height // 2 - CHAR_HEIGHT - 3
+        if compact:
+            # Compact mode: station+time labels before/after bar, train name inside
+            if segment_positions:
+                label_scale = 1
+                label_h = CHAR_HEIGHT * label_scale
+                label_bg_y = y_center - label_h // 2  # background centered on bar
+                label_text_y = label_bg_y + 2  # text shifted down within box for visual centering
+                bar_top = y_center - bar_height // 2
+                bar_bottom = y_center + bar_height // 2
+                label_pad = 4
+                bg_pad = 2
 
-        # Collect all time labels with their positions first, then check for overlaps
-        time_labels = []
+                # Before first segment: "FROM DEP_TIME"
+                first_pos = segment_positions[0]
+                first_seg = first_pos[5]
+                if first_pos[0] > 0:
+                    from_station = first_seg["from"]["station_code"]
+                    dep_time_str = format_time_label(first_pos[2])
+                    before_label = f"{from_station} {dep_time_str}"
+                    before_w = get_text_width(before_label, scale=label_scale)
+                    bx = first_pos[0] - label_pad
+                    draw_rect(img, bx - before_w - bg_pad, label_bg_y - bg_pad,
+                              bx + bg_pad, label_bg_y + label_h + bg_pad, WHITE)
+                    draw_text(img, bx, label_text_y, before_label, BLACK, anchor="right", scale=label_scale)
 
-        for pos_idx, (x1, x2, dep, arr, seg_idx, seg) in enumerate(segment_positions):
-            is_first = pos_idx == 0
-            is_last = pos_idx == len(segment_positions) - 1
+                # After last segment: "ARR_TIME TO"
+                last_pos = segment_positions[-1]
+                last_seg = last_pos[5]
+                if last_pos[1] < WIDTH:
+                    to_station = last_seg["to"]["station_code"]
+                    arr_time_str = format_time_label(last_pos[3])
+                    after_label = f"{arr_time_str} {to_station}"
+                    after_w = get_text_width(after_label, scale=label_scale)
+                    ax = last_pos[1] + label_pad
+                    draw_rect(img, ax - bg_pad, label_bg_y - bg_pad,
+                              ax + after_w + bg_pad, label_bg_y + label_h + bg_pad, WHITE)
+                    draw_text(img, ax, label_text_y, after_label, BLACK, anchor="left", scale=label_scale)
 
-            # Departure time above first bar (left-aligned)
-            if is_first:
-                label = format_time_label(dep)
-                label_width = get_text_width(label, scale=1)
-                time_labels.append((x1, x1 + label_width, label))
+                # Intermediate station labels in gaps between segments
+                for pos_idx in range(len(segment_positions) - 1):
+                    curr_pos = segment_positions[pos_idx]
+                    next_pos = segment_positions[pos_idx + 1]
+                    gap_center = (curr_pos[1] + next_pos[0]) // 2
+                    station_code = curr_pos[5]["to"]["station_code"]
+                    int_time_str = format_time_label(curr_pos[3])
+                    int_label = f"{station_code} {int_time_str}"
+                    int_w = get_text_width(int_label, scale=label_scale)
+                    draw_rect(img, gap_center - int_w // 2 - bg_pad, label_bg_y - bg_pad,
+                              gap_center + int_w // 2 + bg_pad, label_bg_y + label_h + bg_pad, WHITE)
+                    draw_text(img, gap_center, label_text_y, int_label, BLACK, anchor="center", scale=label_scale)
 
-            # Intermediate time (centered in gap)
-            if not is_last:
-                next_x1 = segment_positions[pos_idx + 1][0]
-                gap_center = (x2 + next_x1) // 2
-                label = format_time_label(arr)
-                label_width = get_text_width(label, scale=1)
-                time_labels.append((gap_center - label_width // 2, gap_center + label_width // 2, label))
+                # Train name centered inside the bar
+                route = train.get("route_name") or "Train"
+                if route == "Northeast Regional":
+                    route = "NE Regional"
+                train_num = train.get("train_num", "")
+                label = f"{route} {train_num}"
+                label_width = get_text_width(label)
+                center_x = (block_x1 + block_x2) // 2
+                train_name_y = y_center - CHAR_HEIGHT * FONT_SCALE // 2 + 2  # +2 to compensate for font descender space
+                train_padding = 8
 
-            # Arrival time above last bar (right-aligned)
-            if is_last and arr <= end:
-                label = format_time_label(arr)
-                label_width = get_text_width(label, scale=1)
-                time_labels.append((x2 - label_width, x2, label))
-
-        # Draw time labels, skipping overlaps
-        min_gap = 4
-        last_right = -1000
-        for left, right, label in time_labels:
-            if left > last_right + min_gap:
-                # Draw white background to cover dashed lines
-                bg_pad = 1
-                draw_rect(img, left - bg_pad, time_y - bg_pad, right + bg_pad, time_y + CHAR_HEIGHT + bg_pad, WHITE)
-                # Determine anchor based on position
-                if left == time_labels[0][0] and time_labels[0][2] == label:
-                    draw_text(img, left, time_y, label, BLACK, anchor="left", scale=1)
+                if center_x + label_width // 2 > WIDTH:
+                    draw_text(img, block_x1 + train_padding, train_name_y, label, WHITE, anchor="left")
+                elif center_x - label_width // 2 < 0:
+                    draw_text(img, block_x2 - train_padding, train_name_y, label, WHITE, anchor="right")
                 else:
-                    center = (left + right) // 2
-                    draw_text(img, center, time_y, label, BLACK, anchor="center", scale=1)
-                last_right = right
+                    draw_text(img, center_x, train_name_y, label, WHITE, anchor="center")
+        else:
+            # Normal mode: time labels above bars, station codes + train name inside
+            time_y = y_center - bar_height // 2 - CHAR_HEIGHT - 3
 
-        # Calculate vertical positions for two rows of text
-        bar_top = y_center - bar_height // 2
-        bar_bottom = y_center + bar_height // 2
-        text_padding = 2
-        padding = 4
-        station_y = bar_top + text_padding  # Station codes at top (scale=1)
-        train_name_y = bar_bottom - CHAR_HEIGHT * FONT_SCALE - text_padding  # Train name at bottom (scale=2)
+            time_labels = []
 
-        for pos_idx, (x1, x2, dep, arr, seg_idx, seg) in enumerate(segment_positions):
-            bar_width = x2 - x1
-            is_first = pos_idx == 0
-            is_last = pos_idx == len(segment_positions) - 1
+            for pos_idx, (x1, x2, dep, arr, seg_idx, seg) in enumerate(segment_positions):
+                is_first = pos_idx == 0
+                is_last = pos_idx == len(segment_positions) - 1
 
-            from_station = seg["from"]["station_code"]
-            to_station = seg["to"]["station_code"]
-
-            # Station codes at top of bars (scale=1)
-            min_width_for_station = get_text_width("XXX", scale=1) + padding * 2
-            if bar_width > min_width_for_station:
                 if is_first:
-                    draw_text(img, x1 + padding, station_y, from_station, WHITE, anchor="left", scale=1)
-                if is_last:
-                    draw_text(img, x2 - padding, station_y, to_station, WHITE, anchor="right", scale=1)
+                    label = format_time_label(dep)
+                    label_width = get_text_width(label, scale=1)
+                    time_labels.append((x1, x1 + label_width, label))
 
-            # Intermediate station code
-            if not is_last:
-                next_x1 = segment_positions[pos_idx + 1][0]
-                gap_center = (x2 + next_x1) // 2
+                if not is_last:
+                    next_x1 = segment_positions[pos_idx + 1][0]
+                    gap_center = (x2 + next_x1) // 2
+                    label = format_time_label(arr)
+                    label_width = get_text_width(label, scale=1)
+                    time_labels.append((gap_center - label_width // 2, gap_center + label_width // 2, label))
 
-                # Draw black background for station code
-                code_width = get_text_width(to_station, scale=1)
-                bg_padding = 2
-                bg_x1 = gap_center - code_width // 2 - bg_padding
-                bg_x2 = gap_center + code_width // 2 + bg_padding
-                bg_y1 = station_y - 1
-                bg_y2 = station_y + CHAR_HEIGHT + 1
-                draw_rect(img, bg_x1, bg_y1, bg_x2, bg_y2, BLACK)
+                if is_last and arr <= end:
+                    label = format_time_label(arr)
+                    label_width = get_text_width(label, scale=1)
+                    time_labels.append((x2 - label_width, x2, label))
 
-                draw_text(img, gap_center, station_y, to_station, WHITE, anchor="center", scale=1)
+            min_gap = 4
+            last_right = -1000
+            for left, right, label in time_labels:
+                if left > last_right + min_gap:
+                    bg_pad = 1
+                    draw_rect(img, left - bg_pad, time_y - bg_pad, right + bg_pad, time_y + CHAR_HEIGHT + bg_pad, WHITE)
+                    if left == time_labels[0][0] and time_labels[0][2] == label:
+                        draw_text(img, left, time_y, label, BLACK, anchor="left", scale=1)
+                    else:
+                        center = (left + right) // 2
+                        draw_text(img, center, time_y, label, BLACK, anchor="center", scale=1)
+                    last_right = right
 
-        # Train name centered across the full block (all segments combined, scale=2)
-        if segment_positions:
-            route = train.get("route_name") or "Train"
-            if route == "Northeast Regional":
-                route = "NE Regional"
-            train_num = train.get("train_num", "")
-            label = f"{route} {train_num}"
-            label_width = get_text_width(label)  # defaults to scale=2
-            center_x = (block_x1 + block_x2) // 2
-            train_padding = 8  # larger padding for scale=2 text
+            bar_top = y_center - bar_height // 2
+            bar_bottom = y_center + bar_height // 2
+            text_padding = 2
+            padding = 4
+            station_y = bar_top + text_padding
+            train_name_y = bar_bottom - CHAR_HEIGHT * FONT_SCALE - text_padding
 
-            # Check if centering would clip on the right
-            if center_x + label_width // 2 > WIDTH:
-                # Left-align with padding
-                draw_text(img, block_x1 + train_padding, train_name_y, label, WHITE, anchor="left")
-            # Check if centering would clip on the left
-            elif center_x - label_width // 2 < 0:
-                # Right-align with padding
-                draw_text(img, block_x2 - train_padding, train_name_y, label, WHITE, anchor="right")
-            else:
-                draw_text(img, center_x, train_name_y, label, WHITE, anchor="center")
+            for pos_idx, (x1, x2, dep, arr, seg_idx, seg) in enumerate(segment_positions):
+                bar_width = x2 - x1
+                is_first = pos_idx == 0
+                is_last = pos_idx == len(segment_positions) - 1
+
+                from_station = seg["from"]["station_code"]
+                to_station = seg["to"]["station_code"]
+
+                min_width_for_station = get_text_width("XXX", scale=1) + padding * 2
+                if bar_width > min_width_for_station:
+                    if is_first:
+                        draw_text(img, x1 + padding, station_y, from_station, WHITE, anchor="left", scale=1)
+                    if is_last:
+                        draw_text(img, x2 - padding, station_y, to_station, WHITE, anchor="right", scale=1)
+
+                if not is_last:
+                    next_x1 = segment_positions[pos_idx + 1][0]
+                    gap_center = (x2 + next_x1) // 2
+
+                    code_width = get_text_width(to_station, scale=1)
+                    bg_padding = 2
+                    bg_x1 = gap_center - code_width // 2 - bg_padding
+                    bg_x2 = gap_center + code_width // 2 + bg_padding
+                    bg_y1 = station_y - 1
+                    bg_y2 = station_y + CHAR_HEIGHT + 1
+                    draw_rect(img, bg_x1, bg_y1, bg_x2, bg_y2, BLACK)
+
+                    draw_text(img, gap_center, station_y, to_station, WHITE, anchor="center", scale=1)
+
+            if segment_positions:
+                route = train.get("route_name") or "Train"
+                if route == "Northeast Regional":
+                    route = "NE Regional"
+                train_num = train.get("train_num", "")
+                label = f"{route} {train_num}"
+                label_width = get_text_width(label)
+                center_x = (block_x1 + block_x2) // 2
+                train_padding = 8
+
+                if center_x + label_width // 2 > WIDTH:
+                    draw_text(img, block_x1 + train_padding, train_name_y, label, WHITE, anchor="left")
+                elif center_x - label_width // 2 < 0:
+                    draw_text(img, block_x2 - train_padding, train_name_y, label, WHITE, anchor="right")
+                else:
+                    draw_text(img, center_x, train_name_y, label, WHITE, anchor="center")
 
     return img
 
