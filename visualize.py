@@ -432,8 +432,8 @@ def create_image(trains: list[dict], stations: list[str], now: datetime,
             if visible_arr <= start_time or visible_dep >= end:
                 continue
 
-            x1 = time_to_x(visible_dep, start_time, end)
-            # Extend bars that reach the end of the window to the edge of the image
+            # Extend bars to the edge of the image when they overflow the window
+            x1 = 0 if dep <= start_time else time_to_x(visible_dep, start_time, end)
             x2 = WIDTH if arr >= end else time_to_x(visible_arr, start_time, end)
             bar_width = x2 - x1
 
