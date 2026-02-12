@@ -239,6 +239,13 @@ def round_down_to_30min(t: datetime) -> datetime:
     return t.replace(minute=rounded_minute, second=0, microsecond=0)
 
 
+def round_up_to_30min(t: datetime) -> datetime:
+    """Round a datetime up to the nearest 30-minute increment."""
+    if t.minute % 30 == 0 and t.second == 0 and t.microsecond == 0:
+        return t
+    return round_down_to_30min(t) + timedelta(minutes=30)
+
+
 def parse_time(time_str: str | None) -> datetime | None:
     """Parse ISO format time string to datetime."""
     if not time_str:
@@ -253,11 +260,20 @@ def get_segment_times(segment: dict) -> tuple[datetime | None, datetime | None]:
     """Get departure and arrival times for a segment."""
     dep = parse_time(segment["from"].get("actual") or segment["from"].get("scheduled"))
     arr = parse_time(segment["to"].get("actual") or segment["to"].get("scheduled"))
+
+    # If arrival is before departure (e.g. delayed departure but stale arrival
+    # estimate), reconstruct arrival using the scheduled duration.
+    if dep and arr and arr < dep:
+        sched_dep = parse_time(segment["from"].get("scheduled"))
+        sched_arr = parse_time(segment["to"].get("scheduled"))
+        if sched_dep and sched_arr and sched_arr >= sched_dep:
+            arr = dep + (sched_arr - sched_dep)
+
     return dep, arr
 
 
 def filter_trains_in_window(trains: list[dict], start_time: datetime, end: datetime, now: datetime) -> list[dict]:
-    """Filter trains that haven't departed yet and are within the time window."""
+    """Filter trains that are still en route or upcoming and within the time window."""
     filtered = []
     for train in trains:
         segments = train.get("segments", [])
@@ -265,10 +281,12 @@ def filter_trains_in_window(trains: list[dict], start_time: datetime, end: datet
             continue
 
         first_dep, _ = get_segment_times(segments[0])
-        if first_dep is None:
+        _, last_arr = get_segment_times(segments[-1])
+        if first_dep is None or last_arr is None:
             continue
 
-        if first_dep >= now and first_dep <= end:
+        # Show train if it hasn't completed its journey and departs within the window
+        if last_arr >= now and first_dep <= end:
             parsed_segments = []
             for seg in segments:
                 dep, arr = get_segment_times(seg)
@@ -316,7 +334,7 @@ def create_image(trains: list[dict], stations: list[str], now: datetime,
     img = Image.new("1", (WIDTH, HEIGHT), WHITE)
 
     start_time = round_down_to_30min(now)
-    end = start_time + timedelta(hours=HOURS_TO_SHOW)
+    end = round_up_to_30min(now + timedelta(hours=HOURS_TO_SHOW))
 
     visible_trains = filter_trains_in_window(trains, start_time, end, now)
 
