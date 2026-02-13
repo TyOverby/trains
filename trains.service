@@ -8,8 +8,9 @@ User=trains
 WorkingDirectory=/home/trains/trains
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/trains/.local/bin/uv run server.py
-Restart=on-failure
+Restart=always
 RestartSec=5
+RuntimeMaxSec=1h
 
 [Install]
 WantedBy=multi-user.target
