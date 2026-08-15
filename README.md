@@ -91,23 +91,30 @@ programmatic entry point for fetching data.
 
 ### `visualize.py`
 
-Renders train data to an 800x480 1-bit PIL `Image`. Key constants:
+Renders train data to a 1-bit PIL `Image`. Resolution-dependent layout lives
+in a `RenderConfig` dataclass, with two instances:
 
 ```python
-HOURS_TO_SHOW = 3        # time window displayed
-WIDTH, HEIGHT = 800, 480 # image dimensions (e-ink target)
-LEFT_MARGIN = 50
-RIGHT_MARGIN = 40
-FONT_SCALE = 2           # each font pixel becomes 2x2 screen pixels
+BASE_CONFIG   # native 800x480  (font_scale=2, label_scale=1, ui=1)
+HIRES_CONFIG  # native 1872x1404 -- a clean 2x of the base design
 ```
+
+`HOURS_TO_SHOW = 3` (the time window) is resolution-independent. All layout
+math is expressed in terms of the config: `width`/`height`, the four margins,
+`font_scale`/`label_scale` (integer font scales for large/small text), and
+`ui` (a multiplier for fixed pixel paddings). Because the bitmap font is always
+drawn at an integer scale, text stays crisp at any resolution -- rendering
+natively at 1872x1404 avoids the fractional-scaling artifacts an upscale would
+introduce.
 
 The bitmap font is loaded from `departure.json` at module import time.
 Missing characters (uppercase, `:`, `-`, `>`, `#`, space) are synthesized
 in `load_font()`.
 
-`create_image(trains, stations, now, buffer_before=0, buffer_after=0)` is the
-main entry point, also imported by `server.py`. The optional buffer parameters
-add checkerboard patterns before/after each train bar.
+`create_image(trains, stations, now, buffer_before=0, buffer_after=0,
+cache_age_seconds=None, cfg=BASE_CONFIG)` is the main entry point, also
+imported by `server.py`. The optional buffer parameters add checkerboard
+patterns before/after each train bar; `cfg` selects the resolution.
 
 ### `server.py`
 
@@ -119,7 +126,15 @@ GET /trains?stations=NYP,NWK,PHL
 GET /trains/NYP/NWK/PHL
 ```
 
-Optional query params: `buffer_before` and `buffer_after` (minutes).
+Optional query params: `buffer_before` and `buffer_after` (minutes), and
+`hires` (off by default). When `hires` is truthy (`1`/`true`/`yes`/`on`), the
+schedule is rendered natively at 1872x1404 (`visualize.HIRES_CONFIG`) instead
+of the default 800x480 (`visualize.BASE_CONFIG`). The bitmap font is always
+drawn at an integer scale, so hi-res text stays crisp -- the high-res config is
+a clean 2x of the base design.
+
+There is also `GET /workdays`, which serves the workday grid (see
+`workdays.py`) and takes no query params.
 
 Train data is cached for 5 minutes (`CACHE_TTL`); the PNG is always regenerated
 with the current time so the "now" line stays accurate.

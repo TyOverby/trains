@@ -10,8 +10,11 @@ from urllib.parse import urlparse, parse_qs
 from zoneinfo import ZoneInfo
 
 from main import find_connecting_trains
-from visualize import create_image
+from visualize import create_image, BASE_CONFIG, HIRES_CONFIG
 from workdays import create_image as create_workdays_image
+
+# Values accepted as "true" for boolean query params
+TRUTHY = {"1", "true", "yes", "on"}
 
 # Cache for train data: {route_key: (timestamp, data)}
 train_cache: dict[str, tuple[float, dict]] = {}
@@ -123,6 +126,10 @@ class TrainHandler(BaseHTTPRequestHandler):
             print(f"[request] END 400 ({time.monotonic() - request_start:.3f}s)")
             return
 
+        # High-resolution output (off by default): render natively at 1872x1404
+        hires = params.get("hires", ["0"])[0].strip().lower() in TRUTHY
+        cfg = HIRES_CONFIG if hires else BASE_CONFIG
+
         # Get train data (cached)
         print(f"[request] fetching train data for {' -> '.join(stations)}...")
         t0 = time.monotonic()
@@ -140,8 +147,8 @@ class TrainHandler(BaseHTTPRequestHandler):
         now = datetime.now(ZoneInfo("America/New_York"))
         img = create_image(data["trains"], data["stations"], now,
                           buffer_before=buffer_before, buffer_after=buffer_after,
-                          cache_age_seconds=max_cache_age())
-        print(f"[request] image rendered in {time.monotonic() - t0:.3f}s")
+                          cache_age_seconds=max_cache_age(), cfg=cfg)
+        print(f"[request] image rendered in {time.monotonic() - t0:.3f}s (hires={hires})")
 
         # Convert to PNG bytes
         t0 = time.monotonic()
@@ -190,6 +197,7 @@ def main():
     print(f"Example: http://localhost:{port}/trains?stations=NYP,NWK,PHL")
     print(f"     or: http://localhost:{port}/trains/NYP/NWK/PHL")
     print(f"Buffer:  http://localhost:{port}/trains/NYP/NWK/PHL?buffer_before=15&buffer_after=20")
+    print(f"Hi-res:  http://localhost:{port}/trains/NYP/NWK/PHL?hires=1  (native {HIRES_CONFIG.width}x{HIRES_CONFIG.height})")
     print(f"Workday: http://localhost:{port}/workdays")
     try:
         server.serve_forever()
