@@ -1,7 +1,15 @@
 # amtrak-status
 
-Query real-time Amtrak train schedules between stations and render them as
-1-bit PNG images sized for e-ink displays (800x480).
+A general-purpose server for hosting black-and-white images for e-ink
+displays. It started as an Amtrak schedule renderer (query real-time train
+schedules between stations and render them as 1-bit PNGs) and is growing into
+a home for other e-ink image endpoints.
+
+Endpoints:
+
+- `/trains` -- real-time Amtrak schedules, rendered at 800x480.
+- `/workdays` -- a square per workday between Aug 10 2026 and Dec 9 2029,
+  filled in up to today, rendered at 1872x1404.
 
 ![Example output showing trains from NYP to NWK to PHL](output.png)
 
@@ -21,7 +29,8 @@ uv run server.py                   # start web server on :8080
 ```
 main.py          Amtrak API client and train-finding logic
 visualize.py     1-bit PNG renderer with bitmap font engine
-server.py        HTTP server that combines the above two
+workdays.py      1-bit PNG renderer for the workday-grid endpoint
+server.py        HTTP server that combines the above
 departure.json   Bitmap font data (pixel definitions for each character)
 deploy.sh        Deploys to production via SSH + systemd
 ```

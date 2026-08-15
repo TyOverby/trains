@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from main import find_connecting_trains
 from visualize import create_image
+from workdays import create_image as create_workdays_image
 
 # Cache for train data: {route_key: (timestamp, data)}
 train_cache: dict[str, tuple[float, dict]] = {}
@@ -82,6 +83,14 @@ class TrainHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
 
+        # Workday grid: /workdays -- a square per workday, no external data needed
+        if parsed.path == "/workdays":
+            now = datetime.now(ZoneInfo("America/New_York"))
+            img = create_workdays_image(now)
+            self.send_png(img)
+            print(f"[request] END 200 ({time.monotonic() - request_start:.3f}s)")
+            return
+
         # Expect /trains?stations=NYP,NWK,PHL or /trains/NYP/NWK/PHL
         if parsed.path == "/trains":
             # Query parameter style: /trains?stations=NYP,NWK,PHL
@@ -152,6 +161,18 @@ class TrainHandler(BaseHTTPRequestHandler):
         print(f"[request] response sent in {time.monotonic() - t0:.3f}s")
         print(f"[request] END 200 ({time.monotonic() - request_start:.3f}s)")
 
+    def send_png(self, img):
+        """Encode a PIL image as PNG and send it as the response."""
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png_data = buf.getvalue()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", len(png_data))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(png_data)
+
     def log_message(self, format, *args):
         print(f"{self.address_string()} - {format % args}")
 
@@ -169,6 +190,7 @@ def main():
     print(f"Example: http://localhost:{port}/trains?stations=NYP,NWK,PHL")
     print(f"     or: http://localhost:{port}/trains/NYP/NWK/PHL")
     print(f"Buffer:  http://localhost:{port}/trains/NYP/NWK/PHL?buffer_before=15&buffer_after=20")
+    print(f"Workday: http://localhost:{port}/workdays")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
